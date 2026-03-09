@@ -1,13 +1,17 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
-import json
-from pprint import pprint
+import logging
 
-pd.set_option('display.max_rows', 6)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.width', None)
+from db import (
+    get_cars_by_brand,
+    get_cars_by_brands,
+    DatabaseError,
+    QueryError,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -19,53 +23,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-value_order = {
-    'date_of_manufacturing': 0,
-    'engine_power': 1,
-    'fuel_type': 2,
-    'latitude_coordinates': 3,
-    'longitude_coordinates': 4,
-    'manufacturer': 5,
-    'mileage': 6,
-    'price': 7,
-    'seller_country_code': 8
-}
-
 
 @app.get("/")
 def home():
-    return {'carsonsale.info'}
+    return {"carsonsale.info"}
+
+
+@app.get("/brands")
+def list_brands():
+    """Get list of all available car brands."""
+    try:
+        from db.queries import get_all_brands
+        brands = get_all_brands()
+        return {"brands": brands}
+    except QueryError as e:
+        logger.error(f"Database error: {e}")
+        return JSONResponse({"error": "Failed to fetch brands"}, status_code=500)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+
+@app.get("/countries")
+def list_countries():
+    """Get list of all available country codes."""
+    try:
+        from db.queries import get_distinct_countries
+        countries = get_distinct_countries()
+        return {"countries": countries}
+    except QueryError as e:
+        logger.error(f"Database error: {e}")
+        return JSONResponse({"error": "Failed to fetch countries"}, status_code=500)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 @app.get("/{car_brands}")
 def index(car_brands: str):
-    df = pd.read_csv('cars_on_sale.csv')
-    df = df.drop(columns=['seller_location'])
-    out = {}
-    data_list = []
-    cc_list = []
-    if ',' in car_brands:
-        brands_list = car_brands.split(',')
-        for brand in brands_list:
-            d = get_data(df, brand)
-            data_list += d[0]
-            cc_list += d[1]
-        cc_list = list(set(cc_list))
-    else:
-        d = get_data(df, car_brands)
-        data_list += d[0]
-        cc_list += d[1]
-    out["cc"] = cc_list
-    out["data"] = data_list
-    return JSONResponse(out)
-
-
-def get_data(df, brand):
-    df_filtered = df.loc[df.manufacturer == brand]
-    cc_codes = df_filtered.seller_country_code.unique().tolist()
-    df_filtered = df_filtered.to_json(orient="values")
-    json_out = json.loads(df_filtered)
-    return json_out, cc_codes
+    """Get cars by brand(s). Multiple brands can be comma-separated."""
+    try:
+        if "," in car_brands:
+            brands_list = [b.strip() for b in car_brands.split(",")]
+            cars, cc_list = get_cars_by_brands(brands_list)
+        else:
+            cars = get_cars_by_brand(car_brands.strip())
+            cc_list = list(set(
+                car["seller_country_code"] 
+                for car in cars 
+                if car.get("seller_country_code")
+            ))
+        
+        out = {
+            "cc": cc_list,
+            "data": cars
+        }
+        return JSONResponse(out)
+        
+    except QueryError as e:
+        logger.error(f"Database query error: {e}")
+        return JSONResponse({"error": "Database query failed"}, status_code=500)
+    except DatabaseError as e:
+        logger.error(f"Database connection error: {e}")
+        return JSONResponse({"error": "Database connection failed"}, status_code=503)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 if __name__ == "__main__":
